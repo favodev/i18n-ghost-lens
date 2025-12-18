@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as path from 'path';
 
 const TRANSLATION_DECORATION = vscode.window.createTextEditorDecorationType({
     after: {
@@ -14,9 +13,13 @@ const TRANSLATION_DECORATION = vscode.window.createTextEditorDecorationType({
 let translationCache: Record<string, string> = {};
 let activeEditor = vscode.window.activeTextEditor;
 let updateTimeout: NodeJS.Timeout | undefined = undefined;
+let fileWatcher: vscode.FileSystemWatcher | undefined = undefined;
 
-export function activate(context: vscode.ExtensionContext) {
-    reloadTranslations();
+const LOCALE_FILE_PATTERN = '**/{en,es,fr,de,it,pt,ja,zh,ru}*.json';
+const EXCLUDE_PATTERN = '**/{node_modules,.git,.next,build,dist,out}/**';
+
+export async function activate(context: vscode.ExtensionContext) {
+    await findAndLoadPrimaryTranslationFile();
 
     if (activeEditor) triggerUpdate();
 
@@ -31,31 +34,69 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }, null, context.subscriptions);
 
-    const configWatcher = vscode.workspace.createFileSystemWatcher('**/*.json');
-    configWatcher.onDidChange(() => {
-        reloadTranslations();
-        triggerUpdate();
-    });
-    context.subscriptions.push(configWatcher);
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('i18nGhostLens.localePath')) {
+            findAndLoadPrimaryTranslationFile();
+        }
+    }));
 }
 
-function reloadTranslations() {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) return;
-
+async function findAndLoadPrimaryTranslationFile() {
     const config = vscode.workspace.getConfiguration('i18nGhostLens');
-    const relativePath = config.get<string>('localePath') || 'locales/es.json';
-    const absolutePath = path.join(workspaceFolders[0].uri.fsPath, relativePath);
+    const manualPath = config.get<string>('localePath');
+    const workspaceFolders = vscode.workspace.workspaceFolders;
 
-    if (!fs.existsSync(absolutePath)) return;
+    if (!workspaceFolders) return;
+    const rootUri = workspaceFolders[0].uri;
 
+    let targetUri: vscode.Uri | undefined = undefined;
+
+    if (manualPath) {
+        const manualUri = vscode.Uri.joinPath(rootUri, manualPath);
+        if (fs.existsSync(manualUri.fsPath)) {
+            targetUri = manualUri;
+        }
+    }
+
+    if (!targetUri) {
+        const candidates = await vscode.workspace.findFiles(LOCALE_FILE_PATTERN, EXCLUDE_PATTERN, 5);
+        if (candidates.length > 0) {
+            targetUri = candidates[0];
+        }
+    }
+
+    if (targetUri) {
+        loadTranslationsFromUri(targetUri);
+        setupFileWatcher(targetUri);
+        triggerUpdate();
+    } else {
+        translationCache = {};
+        triggerUpdate();
+    }
+}
+
+function loadTranslationsFromUri(uri: vscode.Uri) {
     try {
-        const content = fs.readFileSync(absolutePath, 'utf-8');
+        const content = fs.readFileSync(uri.fsPath, 'utf-8');
         const json = JSON.parse(content);
         translationCache = flattenObject(json);
     } catch (error) {
-        console.error(error);
+        translationCache = {};
     }
+}
+
+function setupFileWatcher(uri: vscode.Uri) {
+    if (fileWatcher) {
+        fileWatcher.dispose();
+    }
+    fileWatcher = vscode.workspace.createFileSystemWatcher(uri.fsPath);
+    fileWatcher.onDidChange(() => {
+        loadTranslationsFromUri(uri);
+        triggerUpdate();
+    });
+    fileWatcher.onDidDelete(() => {
+        findAndLoadPrimaryTranslationFile();
+    });
 }
 
 function flattenObject(obj: any, prefix = ''): Record<string, string> {
@@ -85,7 +126,7 @@ function triggerUpdate(throttle = false) {
 function updateDecorations() {
     if (!activeEditor) return;
 
-    const regex = /t\(['"`]([\w.]+)['"`]\)/g;
+    const regex = /t\(['"`]([\w.-]+)['"`]\)/g;
     const text = activeEditor.document.getText();
     const decorations: vscode.DecorationOptions[] = [];
 
@@ -95,13 +136,11 @@ function updateDecorations() {
         const translation = translationCache[captureGroup];
 
         if (translation) {
-            const startPos = activeEditor.document.positionAt(match.index + match[0].length);
             const endPos = activeEditor.document.positionAt(match.index + match[0].length);
-            
-            const truncate = translation.length > 30 ? translation.substring(0, 27) + '...' : translation;
+            const truncate = translation.length > 40 ? translation.substring(0, 37) + '...' : translation;
 
             decorations.push({
-                range: new vscode.Range(startPos, endPos),
+                range: new vscode.Range(endPos, endPos),
                 renderOptions: {
                     after: { contentText: `  ➜  ${truncate}` },
                 },
@@ -112,4 +151,6 @@ function updateDecorations() {
     activeEditor.setDecorations(TRANSLATION_DECORATION, decorations);
 }
 
-export function deactivate() {}
+export function deactivate() {
+    if (fileWatcher) fileWatcher.dispose();
+}
