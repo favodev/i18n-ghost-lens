@@ -2,13 +2,21 @@
   "name": "i18n-ghost-lens",
   "displayName": "i18n Ghost Lens",
   "description": "Visualiza traducciones i18n directamente en tu código",
-  "version": "0.0.1",
+  "version": "1.0.0",
+  "publisher": "favodev",  
+  "icon": "icono.png",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
     "Visualization",
-    "Productivity"
+    "Other"
+  ],
+  "keywords": [
+    "productivity",
+    "i18n",
+    "translation",
+    "ghost text"
   ],
   "activationEvents": [
     "onLanguage:typescript",
